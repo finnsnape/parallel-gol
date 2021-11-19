@@ -37,7 +37,7 @@ func createBoard(width int, height int) *Board {
 // Creates the board states
 func createBoardStates(width int, height int, c distributorChannels) *BoardStates {
 	current := createBoard(width, height)
-	current.PopulateBoard(c)
+	current.PopulateBoard(c) // set the cells of the current board to those from the input
 	next := createBoard(width, height)
 	return &BoardStates{current: current, next: next, width: width, height: height}
 }
@@ -51,7 +51,7 @@ func (board *Board) PopulateBoard(c distributorChannels) {
 	}
 }
 
-// Get gets the value form a cell
+// Get gets the value from a cell
 func (board *Board) Get (x int, y int) uint8 {
 	return board.cells[y][x]
 }
