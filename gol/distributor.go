@@ -1,5 +1,10 @@
 package gol
 
+import (
+	"strconv"
+	"uk.ac.bris.cs/gameoflife/util"
+)
+
 type distributorChannels struct {
 	events     chan<- Event
 	ioCommand  chan<- ioCommand
@@ -63,29 +68,34 @@ func (board *Board) Set (x int, y int, val uint8) {
 
 // CheckAlive checks if a cell is alive, accounting for wrap around
 func (board *Board) CheckAlive (x int, y int) bool {
-	x = x % board.width
-	y = y % board.height
+	x = (x + board.width) % board.width
+	y = (y + board.height) % board.height
 	return board.Get(x, y) == 255
 }
 
 // AdvanceCell returns the new value for a specific cell after a turn
 func (board *Board) AdvanceCell(x int, y int) uint8 {
-	neighbours := 0
+	aliveNeighbours := 0
 	for i:=-1; i<=1; i++ {
 		for j:=-1; j<=1; j++ {
 			if board.CheckAlive(x+j, y+i) && (i != 0 && j != 0) { // ensure we aren't counting the cell itself
-				neighbours++
+				aliveNeighbours++
 			}
 		}
 	}
-	if neighbours < 2 || neighbours > 3 {
-		return 0 // dies
-	} else if neighbours == 3 {
-		return 255 // alive
-	} else {
-		return board.Get(x, y) // the same
+	if board.CheckAlive(x,y) { // check if the cell is alive or not
+		if aliveNeighbours < 2 || aliveNeighbours > 3 {
+			return 0 // dies
+		} else {
+			return 255 // the same
+		}
+	} else{ // if the cell is dead
+		if aliveNeighbours == 3 {
+			return 255 // become alive
+		} else {
+			return 0 // stay the same
+		}
 	}
-
 }
 
 // AdvanceBoardStates moves the game forward by one turn
@@ -103,23 +113,40 @@ func (boardStates *BoardStates) AdvanceBoardStates() {
 	boardStates.next = createBoard(height, width) // make the next board a new empty board
 }
 
+func (board *Board) finalAliveCells() []util.Cell {
+	var aliveCells []util.Cell
+	for i := 0; i < board.height; i++ {
+		for j := 0; j < board.width; j++ {
+			if board.cells[i][j] == 255 {
+				aliveCells = append(aliveCells, util.Cell{j,i})
+			}
+		}
+	}
+	return aliveCells
+}
+
+
 // distributor divides the work between workers and interacts with other goroutines.
 func distributor(p Params, c distributorChannels) {
+	// make the filename and pass it through channel
+	var filename string
+	filename = strconv.Itoa(p.ImageWidth)  + "x" + strconv.Itoa(p.ImageHeight)
+	c.ioCommand <- ioInput // start read the image
+	c.ioFilename <- filename // pass the filename of the image
 
+	// TODO: Execute all turns of the Game of Life.
 	boardStates := createBoardStates(p.ImageWidth, p.ImageHeight, c)
 
 	turn := 0
 
-	for i:=0; i<p.Turns; i++ {
+	for turn < p.Turns {
 		boardStates.AdvanceBoardStates()
 		turn++
 	}
 
-
-	// TODO: Execute all turns of the Game of Life.
-
 	// TODO: Report the final state using FinalTurnCompleteEvent.
-
+	aliveCells := boardStates.current.finalAliveCells()
+	c.events <- FinalTurnComplete{turn,aliveCells}
 
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
