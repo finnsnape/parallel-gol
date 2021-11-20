@@ -78,7 +78,10 @@ func (board *Board) AdvanceCell(x int, y int) uint8 {
 	aliveNeighbours := 0
 	for i:=-1; i<=1; i++ {
 		for j:=-1; j<=1; j++ {
-			if board.CheckAlive(x+j, y+i) && (i != 0 && j != 0) { // ensure we aren't counting the cell itself
+			if i == 0 && j == 0{ // ensure we aren't counting the cell itself
+				continue
+			}
+			if board.CheckAlive(x+j, y+i){
 				aliveNeighbours++
 			}
 		}
