@@ -3,6 +3,7 @@ package gol
 import (
 	"strconv"
 	"sync"
+	"time"
 	"uk.ac.bris.cs/gameoflife/util"
 )
 
@@ -139,7 +140,32 @@ func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width i
 	}
 }
 
-// AliveCells returns a list of Cells that are alive
+
+func (boardStates *BoardStates) ReportAliveCellCount(stopGame chan bool, turnChannel chan int, c distributorChannels) {
+	current := boardStates.current
+	turn := 0
+	ticker := time.NewTicker(2 * time.Second)
+	for ; true; <-ticker.C {
+		count := 0
+		for j := 0; j < current.height; j++ {
+			for i := 0; i < current.width; i++ {
+				if current.Alive(i, j, false) {
+					count++
+				}
+			}
+		}
+		select {
+			case t := <-turnChannel:
+				turn = t
+			case <-stopGame:
+				ticker.Stop()
+				return
+		}
+		c.events <- AliveCellsCount{turn, count}
+	}
+}
+
+// AliveCells returns a list of Cells that are alive at the end of the game
 func (board *Board) AliveCells() []util.Cell {
 	var aliveCells []util.Cell
 	for j:=0; j<board.height; j++ {
@@ -162,15 +188,24 @@ func distributor(p Params, c distributorChannels) {
 
 	boardStates := createBoardStates(p.ImageWidth, p.ImageHeight, c)
 
+	stopGame := make(chan bool)
+	turnChannel := make(chan int)
+	go boardStates.ReportAliveCellCount(stopGame, turnChannel, c)
+
+	turn := 0
 	var wg sync.WaitGroup
 	workers := p.Threads
-	turn := 0
-	for ; turn<p.Turns; turn++ { // execute the turns
+	for turn<p.Turns { // execute the turns
 		boardStates.Advance(&wg, workers, p.ImageWidth, p.ImageHeight)
 		wg.Wait()
 		// swap the boards since the old advanced is current, and we will update all cells of the new advanced anyway
 		boardStates.current, boardStates.advanced = boardStates.advanced, boardStates.current
+		turn++
+		c.events <- TurnComplete{turn}
+		turnChannel <- turn
 	}
+
+	stopGame <- true
 
 	aliveCells := boardStates.current.AliveCells()
 	c.events <- FinalTurnComplete{turn,aliveCells}
