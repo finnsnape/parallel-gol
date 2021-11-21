@@ -24,13 +24,13 @@ type Board struct {
 
 // BoardStates stores the current state of the board, the state of the board if we make one more turn, and the w/h
 type BoardStates struct {
-	current *Board
-	next *Board
+	current *Board // the current board
+	advanced *Board // the current board after one turn
 	width int
 	height int
 }
 
-// Create a board struct given a width and height
+// createBoard creates a board struct given a width and height
 // Note we create the columns first, so we need to do cells[y][x]
 func createBoard(width int, height int) *Board {
 	cells := make([][]uint8, height)
@@ -40,15 +40,15 @@ func createBoard(width int, height int) *Board {
 	return &Board{cells: cells, width: width, height: height}
 }
 
-// Creates the board states given a width, height and the input
+// createBoardStates creates the board states given a width, height and the input
 func createBoardStates(width int, height int, c distributorChannels) *BoardStates {
 	current := createBoard(width, height)
 	current.PopulateBoard(c) // set the cells of the current board to those from the input
-	next := createBoard(width, height)
-	return &BoardStates{current: current, next: next, width: width, height: height}
+	advanced := createBoard(width, height)
+	return &BoardStates{current: current, advanced: advanced, width: width, height: height}
 }
 
-// PopulateBoard sets the board values to the input
+// PopulateBoard sets the board values to those from the input
 func (board *Board) PopulateBoard(c distributorChannels) {
 	for j:=0; j<board.height; j++ {
 		for i:=0; i<board.width; i++ {
@@ -57,64 +57,66 @@ func (board *Board) PopulateBoard(c distributorChannels) {
 	}
 }
 
-// Get gets the value from a cell
-func (board *Board) Get (x int, y int) uint8 {
-	return board.cells[y][x]
-}
-
 // Set sets the value of a cell
 func (board *Board) Set (x int, y int, val uint8) {
 	board.cells[y][x] = val
 }
 
-// CheckAlive checks if a cell is alive, accounting for wrap around if necessary
-func (board *Board) CheckAlive (x int, y int, wrap bool) bool {
+// Alive checks if a cell is alive, accounting for wrap around if necessary
+func (board *Board) Alive(x int, y int, wrap bool) bool {
 	if wrap {
-		x = (x + board.width) % board.width // need to add the width/height for these as Go modulus doesn't like negatives
+		x = (x + board.width) % board.width // need to add the w and h for these as Go modulus doesn't like negatives
 		y = (y + board.height) % board.height
 	}
-	return board.Get(x, y) == 255
+	return board.cells[y][x] == 255
 }
 
-// AdvanceCell sets the new value for a specific cell after a turn
-// Checks every cell within 1 of the given cell, and then checks if each of these are alive to get the neighbour count
-func (board *Board) AdvanceCell(x int, y int) uint8 {
+// Neighbours checks all cells within 1 cell, then checks if each of these are alive to get the returned neighbour count
+func (board *Board) Neighbours(x int, y int) int {
 	aliveNeighbours := 0
 	for i:=-1; i<=1; i++ {
 		for j:=-1; j<=1; j++ {
 			if i == 0 && j == 0 { // ensure we aren't counting the cell itself
 				continue
 			}
-			if board.CheckAlive(x+j, y+i, true) {
+			if board.Alive(x+j, y+i, true) { // note: we are sorta repeating this unnecessarily for each cell?
 				aliveNeighbours++
 			}
 		}
 	}
-	if board.CheckAlive(x,y, false) { // if the cell is alive
+	return aliveNeighbours
+}
+
+// AdvanceCell updates the value for a specific cell after a turn
+func (boardStates *BoardStates) AdvanceCell(x int, y int) {
+	aliveNeighbours := boardStates.current.Neighbours(x, y)
+	var newCellValue uint8
+	if boardStates.current.Alive(x,y, false) { // if the cell is alive
 		if aliveNeighbours < 2 || aliveNeighbours > 3 {
-			return 0 // dies
+			newCellValue = 0 // dies
 		} else {
-			return 255 // stays the same
+			newCellValue = 255 // stays the same
 		}
 	} else { // if the cell is dead
 		if aliveNeighbours == 3 {
-			return 255 // becomes alive
+			newCellValue = 255 // becomes alive
 		} else {
-			return 0 // stays the same
+			newCellValue = 0 // stays the same
 		}
 	}
+	boardStates.advanced.Set(x, y, newCellValue)
 }
 
-// AdvanceSection advances the board one turn only between the specified x and y values
+// AdvanceSection advances the board one turn only between the specified x and y values assigned to the worker
 func (boardStates *BoardStates) AdvanceSection(startX int, endX int, startY int, endY int) {
 	for j:=startY; j<endY; j++ {
 		for i:=startX; i<endX; i++ {
-			boardStates.next.Set(i, j, boardStates.current.AdvanceCell(i, j))
+			boardStates.AdvanceCell(i, j)
 		}
 	}
 }
 
-// Update boardStates.next based on boardStates.current, from startY up to endY
+// worker updates boardStates.advanced based on boardStates.current, from startY up to endY
 func worker(wg *sync.WaitGroup, boardStates *BoardStates, startX int, endX int, startY int, endY int) {
 	defer wg.Done()
 	boardStates.AdvanceSection(startX, endX, startY, endY)
@@ -137,12 +139,12 @@ func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width i
 	}
 }
 
-// GetAliveCells returns a list of Cells that are alive, so we know how many there are once the game has finished
-func (board *Board) GetAliveCells() []util.Cell {
+// AliveCells returns a list of Cells that are alive, so we know how many there are once the game has finished
+func (board *Board) AliveCells() []util.Cell {
 	var aliveCells []util.Cell
 	for j:=0; j<board.height; j++ {
 		for i:=0; i<board.width; i++ {
-			if board.CheckAlive(i, j, false) {
+			if board.Alive(i, j, false) {
 				aliveCells = append(aliveCells, util.Cell{X: i, Y: j})
 			}
 		}
@@ -154,26 +156,24 @@ func (board *Board) GetAliveCells() []util.Cell {
 func distributor(p Params, c distributorChannels) {
 	// make the filename and pass it through channel
 	var filename string
-	height := p.ImageHeight
-	width := p.ImageWidth
-	filename = strconv.Itoa(width)  + "x" + strconv.Itoa(height)
+	filename = strconv.Itoa(p.ImageWidth)  + "x" + strconv.Itoa(p.ImageHeight)
 	c.ioCommand <- ioInput // start read the image
 	c.ioFilename <- filename // pass the filename of the image
 
-	boardStates := createBoardStates(width, height, c)
+	boardStates := createBoardStates(p.ImageWidth, p.ImageHeight, c)
 
 	var wg sync.WaitGroup
 	workers := p.Threads
 	turn := 0
 	for ; turn<p.Turns; turn++ { // execute the turns
-		boardStates.Advance(&wg, workers, width, height)
+		boardStates.Advance(&wg, workers, p.ImageWidth, p.ImageHeight)
 		wg.Wait()
-		// we can swap the two boards now, since the old next is current, and we will update the new next fully anyway
-		boardStates.current, boardStates.next = boardStates.next, boardStates.current
+		// swap the boards since the old advanced is current, and we will update all cells of the new advanced anyway
+		boardStates.current, boardStates.advanced = boardStates.advanced, boardStates.current
 	}
 
 	// TODO: Report the final state using FinalTurnCompleteEvent.
-	aliveCells := boardStates.current.GetAliveCells()
+	aliveCells := boardStates.current.AliveCells()
 	c.events <- FinalTurnComplete{turn,aliveCells}
 
 	// Make sure that the Io has finished any output before exiting.
