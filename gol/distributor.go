@@ -76,7 +76,7 @@ func (board *Board) CheckAlive (x int, y int, wrap bool) bool {
 	return board.Get(x, y) == 255
 }
 
-// AdvanceCell returns the new value for a specific cell after a turn
+// AdvanceCell sets the new value for a specific cell after a turn
 // Checks every cell within 1 of the given cell, and then checks if each of these are alive to get the neighbour count
 func (board *Board) AdvanceCell(x int, y int) uint8 {
 	aliveNeighbours := 0
@@ -105,8 +105,8 @@ func (board *Board) AdvanceCell(x int, y int) uint8 {
 	}
 }
 
-// AdvanceBoardStates moves the game forward by one turn
-func (boardStates *BoardStates) AdvanceBoardStates(startX int, endX int, startY int, endY int) {
+// AdvanceSection advances the board one turn only between the specified x and y values
+func (boardStates *BoardStates) AdvanceSection(startX int, endX int, startY int, endY int) {
 	for j:=startY; j<endY; j++ {
 		for i:=startX; i<endX; i++ {
 			boardStates.next.Set(i, j, boardStates.current.AdvanceCell(i, j))
@@ -117,11 +117,11 @@ func (boardStates *BoardStates) AdvanceBoardStates(startX int, endX int, startY 
 // Update boardStates.next based on boardStates.current, from startY up to endY
 func worker(wg *sync.WaitGroup, boardStates *BoardStates, startX int, endX int, startY int, endY int) {
 	defer wg.Done()
-	boardStates.AdvanceBoardStates(startX, endX, startY, endY)
+	boardStates.AdvanceSection(startX, endX, startY, endY)
 }
 
-// Splits the board into horizontal slices, and each worker works on one section
-func (boardStates *BoardStates) splitWorkers(wg *sync.WaitGroup, workers int, width int, height int) {
+// Advance splits the board into horizontal slices. Each worker works on one section to advance the whole board one turn
+func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width int, height int) {
 	var startX, endX, startY, endY int
 	for i:=0; i<workers; i++ {
 		startX = 0
@@ -137,8 +137,8 @@ func (boardStates *BoardStates) splitWorkers(wg *sync.WaitGroup, workers int, wi
 	}
 }
 
-// FinalAliveCells returns a list of cells that are alive once the game has finished
-func (board *Board) FinalAliveCells() []util.Cell {
+// GetAliveCells returns a list of Cells that are alive, so we know how many there are once the game has finished
+func (board *Board) GetAliveCells() []util.Cell {
 	var aliveCells []util.Cell
 	for j:=0; j<board.height; j++ {
 		for i:=0; i<board.width; i++ {
@@ -166,14 +166,14 @@ func distributor(p Params, c distributorChannels) {
 	workers := p.Threads
 	turn := 0
 	for ; turn<p.Turns; turn++ { // execute the turns
-		boardStates.splitWorkers(&wg, workers, width, height)
+		boardStates.Advance(&wg, workers, width, height)
 		wg.Wait()
 		// we can swap the two boards now, since the old next is current, and we will update the new next fully anyway
 		boardStates.current, boardStates.next = boardStates.next, boardStates.current
 	}
 
 	// TODO: Report the final state using FinalTurnCompleteEvent.
-	aliveCells := boardStates.current.FinalAliveCells()
+	aliveCells := boardStates.current.GetAliveCells()
 	c.events <- FinalTurnComplete{turn,aliveCells}
 
 	// Make sure that the Io has finished any output before exiting.
