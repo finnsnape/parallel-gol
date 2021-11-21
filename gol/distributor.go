@@ -139,7 +139,7 @@ func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width i
 	}
 }
 
-// AliveCells returns a list of Cells that are alive, so we know how many there are once the game has finished
+// AliveCells returns a list of Cells that are alive
 func (board *Board) AliveCells() []util.Cell {
 	var aliveCells []util.Cell
 	for j:=0; j<board.height; j++ {
@@ -172,7 +172,6 @@ func distributor(p Params, c distributorChannels) {
 		boardStates.current, boardStates.advanced = boardStates.advanced, boardStates.current
 	}
 
-	// TODO: Report the final state using FinalTurnCompleteEvent.
 	aliveCells := boardStates.current.AliveCells()
 	c.events <- FinalTurnComplete{turn,aliveCells}
 
