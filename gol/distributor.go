@@ -125,12 +125,12 @@ func worker(wg *sync.WaitGroup, boardStates *BoardStates, startX int, endX int, 
 
 // Advance splits the board into horizontal slices. Each worker works on one section to advance the whole board one turn
 func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width int, height int) {
-	var startX, endX, startY, endY int
 	for i:=0; i<workers; i++ {
-		startX = 0
-		endX = width
-		startY = i * height/workers
-		if i == workers-1 {
+		startX := 0
+		endX := width
+		startY := i * height/workers
+		var endY int
+		if i == workers-1 { // make the last worker take the remaining space
 			endY = height
 		} else {
 			endY = (i + 1) * height/workers
@@ -140,16 +140,14 @@ func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width i
 	}
 }
 
-
 func (boardStates *BoardStates) ReportAliveCellCount(stopGame chan bool, turnChannel chan int, c distributorChannels) {
-	current := boardStates.current
 	turn := 0
 	ticker := time.NewTicker(2 * time.Second)
 	for ; true; <-ticker.C {
 		count := 0
-		for j := 0; j < current.height; j++ {
-			for i := 0; i < current.width; i++ {
-				if current.Alive(i, j, false) {
+		for j := 0; j < boardStates.height; j++ {
+			for i := 0; i < boardStates.width; i++ {
+				if boardStates.current.Alive(i, j, false) {
 					count++
 				}
 			}
