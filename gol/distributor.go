@@ -58,6 +58,11 @@ func (board *Board) PopulateBoard(c distributorChannels) {
 	}
 }
 
+// Get sets the value of a cell
+func (board *Board) Get (x int, y int) uint8 {
+	return board.cells[y][x]
+}
+
 // Set sets the value of a cell
 func (board *Board) Set (x int, y int, val uint8) {
 	board.cells[y][x] = val
@@ -176,6 +181,18 @@ func (board *Board) AliveCells() []util.Cell {
 	return aliveCells
 }
 
+func (boardStates *BoardStates) WriteImage(p Params,c distributorChannels) {
+	c.ioCommand <- ioOutput
+	filename := strconv.Itoa(p.ImageWidth)  + "x" + strconv.Itoa(p.ImageHeight) + "x" + strconv.Itoa(p.Turns)
+	c.ioFilename <- filename
+	for j := 0; j < p.ImageHeight; j++ {
+		for i := 0; i < p.ImageWidth; i++{
+			c.ioOutput <- boardStates.current.Get(i, j)
+		}
+	}
+	c.events <- ImageOutputComplete{p.Turns,filename}
+}
+
 // distributor divides the work between workers and interacts with other goroutines.
 func distributor(p Params, c distributorChannels) {
 	// make the filename and pass it through channel
@@ -204,6 +221,8 @@ func distributor(p Params, c distributorChannels) {
 	}
 
 	stopGame <- true
+
+	boardStates.WriteImage(p, c)
 
 	aliveCells := boardStates.current.AliveCells()
 	c.events <- FinalTurnComplete{turn,aliveCells}
