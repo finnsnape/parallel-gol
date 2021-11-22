@@ -145,24 +145,26 @@ func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width i
 	}
 }
 
-func (boardStates *BoardStates) ReportAliveCellCount(stopGame chan bool, ticker *time.Ticker, countChannel chan int) {
-	for {
-		select {
-			case <-ticker.C:
-				count := 0 // count number of cells
-				for i:=0; i<boardStates.height; i++ {
-					for j:=0; j<boardStates.width; j++ {
-						if boardStates.current.Alive(i, j, false) {
-							count++
-						}
-					}
+func (boardStates *BoardStates) ReportAliveCellCount(stopGame chan struct{}, turnChannel chan int, ticker *time.Ticker, c distributorChannels) {
+	// ticker := time.NewTicker(2 * time.Second) // every 2 seconds
+	turn := 0
+	for range ticker.C {
+		count := 0 // count number of cells
+		for i:=0; i<boardStates.height; i++ {
+			for j:=0; j<boardStates.width; j++ {
+				if boardStates.current.Alive(i, j, false) {
+					count++
 				}
-				countChannel <- count
-				// c.events <- AliveCellsCount{turn, count}
-			case <-stopGame: // check if game is over
-				ticker.Stop()
-				return
-		}}
+			}
+		}
+		select {
+		case t := <- turnChannel:
+			turn = t
+		case <-stopGame: // check if game is over
+			return
+		}
+		c.events <- AliveCellsCount{turn, count}
+	}
 }
 
 // AliveCells returns a list of Cells that are alive at the end of the game
@@ -201,19 +203,11 @@ func distributor(p Params, c distributorChannels) {
 
 	boardStates := createBoardStates(p.ImageWidth, p.ImageHeight, c)
 
-	stopGame := make(chan bool)
-	countChannel := make(chan int)
+	stopGame := make(chan struct{})
+	turnChannel := make(chan int)
 	ticker := time.NewTicker(2 * time.Second) // every 2 seconds
 	turn := 0
-	go boardStates.ReportAliveCellCount(stopGame, ticker, countChannel)
-	go func() {
-		for {
-			select {
-			case count := <- countChannel:
-				c.events <- AliveCellsCount{turn, count}
-			}
-		}
-	}()
+	go boardStates.ReportAliveCellCount(stopGame, turnChannel, ticker, c)
 
 
 	workers := p.Threads
@@ -225,10 +219,11 @@ func distributor(p Params, c distributorChannels) {
 		boardStates.current, boardStates.advanced = boardStates.advanced, boardStates.current
 		turn++
 		c.events <- TurnComplete{turn}
+		turnChannel <- turn // commenting this out makes Stage 2 run fast
 	}
 
-	stopGame <- true
 	ticker.Stop()
+	close(stopGame)
 
 	//boardStates.WriteImage(p, c)
 
@@ -240,8 +235,6 @@ func distributor(p Params, c distributorChannels) {
 	<-c.ioIdle
 
 	c.events <- StateChange{turn, Quitting}
-
-	close(stopGame)
 	
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)
