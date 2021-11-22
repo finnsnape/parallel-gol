@@ -145,25 +145,20 @@ func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width i
 	}
 }
 
-func (boardStates *BoardStates) ReportAliveCellCount(stopGame chan struct{}, turnChannel chan int, ticker *time.Ticker, c distributorChannels) {
-	// ticker := time.NewTicker(2 * time.Second) // every 2 seconds
-	turn := 0
-	for range ticker.C {
-		count := 0 // count number of cells
-		for i:=0; i<boardStates.height; i++ {
-			for j:=0; j<boardStates.width; j++ {
-				if boardStates.current.Alive(i, j, false) {
-					count++
-				}
-			}
-		}
+func (boardStates *BoardStates) CalculateAliveCellCount(stopGame chan struct{}, countChannel chan int) {
+	ticker := time.NewTicker(2 * time.Second) // every 2 seconds
+	for {
 		select {
-		case t := <- turnChannel:
-			turn = t
+		case <-ticker.C:
+			// stop the rest of the code from accessing boardStates (e.g. with mutex)
+			// calculate the count
+			count := 0
+			// unlock boardStates
+			countChannel <- count
 		case <-stopGame: // check if game is over
+			ticker.Stop()
 			return
 		}
-		c.events <- AliveCellsCount{turn, count}
 	}
 }
 
@@ -204,11 +199,19 @@ func distributor(p Params, c distributorChannels) {
 	boardStates := createBoardStates(p.ImageWidth, p.ImageHeight, c)
 
 	stopGame := make(chan struct{})
-	turnChannel := make(chan int)
-	ticker := time.NewTicker(2 * time.Second) // every 2 seconds
+	countChannel := make(chan int)
 	turn := 0
-	go boardStates.ReportAliveCellCount(stopGame, turnChannel, ticker, c)
-
+	go func() {
+		for {
+			select {
+			case count := <- countChannel:
+				c.events <- AliveCellsCount{turn, count}
+			case <-stopGame:
+				return
+			}
+		}
+	}()
+	go boardStates.CalculateAliveCellCount(stopGame, countChannel)
 
 	workers := p.Threads
 	var wg sync.WaitGroup
@@ -219,10 +222,9 @@ func distributor(p Params, c distributorChannels) {
 		boardStates.current, boardStates.advanced = boardStates.advanced, boardStates.current
 		turn++
 		c.events <- TurnComplete{turn}
-		turnChannel <- turn // commenting this out makes Stage 2 run fast
+		// turnChannel <- turn // commenting this out makes Stage 2 run fast
 	}
 
-	ticker.Stop()
 	close(stopGame)
 
 	//boardStates.WriteImage(p, c)
