@@ -145,27 +145,24 @@ func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width i
 	}
 }
 
-func (boardStates *BoardStates) ReportAliveCellCount(stopGame chan bool, turnChannel chan int, c distributorChannels) {
-	turn := 0
-	ticker := time.NewTicker(2 * time.Second) // every 2 seconds
-	for range ticker.C {
-		count := 0 // count number of cells
-		for i:=0; i<boardStates.height; i++ {
-			for j:=0; j<boardStates.width; j++ {
-				if boardStates.current.Alive(i, j, false) {
-					count++
-				}
-			}
-		}
+func (boardStates *BoardStates) ReportAliveCellCount(stopGame chan bool, ticker *time.Ticker, countChannel chan int) {
+	for {
 		select {
-			case t := <-turnChannel: // update the turn when one turn finishes
-				turn = t
+			case <-ticker.C:
+				count := 0 // count number of cells
+				for i:=0; i<boardStates.height; i++ {
+					for j:=0; j<boardStates.width; j++ {
+						if boardStates.current.Alive(i, j, false) {
+							count++
+						}
+					}
+				}
+				countChannel <- count
+				// c.events <- AliveCellsCount{turn, count}
 			case <-stopGame: // check if game is over
 				ticker.Stop()
 				return
-		}
-		c.events <- AliveCellsCount{turn, count}
-	}
+		}}
 }
 
 // AliveCells returns a list of Cells that are alive at the end of the game
@@ -181,9 +178,10 @@ func (board *Board) AliveCells() []util.Cell {
 	return aliveCells
 }
 
+// WriteImage outputs the final state of the board as a PGM image
 func (boardStates *BoardStates) WriteImage(p Params,c distributorChannels) {
 	c.ioCommand <- ioOutput
-	filename := strconv.Itoa(p.ImageWidth)  + "x" + strconv.Itoa(p.ImageHeight) + "x" + strconv.Itoa(p.Turns)
+	filename := strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight) + "x" + strconv.Itoa(p.Turns)
 	c.ioFilename <- filename
 	for j := 0; j < p.ImageHeight; j++ {
 		for i := 0; i < p.ImageWidth; i++{
@@ -197,17 +195,27 @@ func (boardStates *BoardStates) WriteImage(p Params,c distributorChannels) {
 func distributor(p Params, c distributorChannels) {
 	// make the filename and pass it through channel
 	var filename string
-	filename = strconv.Itoa(p.ImageWidth)  + "x" + strconv.Itoa(p.ImageHeight)
+	filename = strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight)
 	c.ioCommand <- ioInput // start read the image
 	c.ioFilename <- filename // pass the filename of the image
 
 	boardStates := createBoardStates(p.ImageWidth, p.ImageHeight, c)
 
 	stopGame := make(chan bool)
-	turnChannel := make(chan int)
-	go boardStates.ReportAliveCellCount(stopGame, turnChannel, c)
-
+	countChannel := make(chan int)
+	ticker := time.NewTicker(2 * time.Second) // every 2 seconds
 	turn := 0
+	go boardStates.ReportAliveCellCount(stopGame, ticker, countChannel)
+	go func() {
+		for {
+			select {
+			case count := <- countChannel:
+				c.events <- AliveCellsCount{turn, count}
+			}
+		}
+	}()
+
+
 	workers := p.Threads
 	var wg sync.WaitGroup
 	for turn<p.Turns { // execute the turns
@@ -217,12 +225,12 @@ func distributor(p Params, c distributorChannels) {
 		boardStates.current, boardStates.advanced = boardStates.advanced, boardStates.current
 		turn++
 		c.events <- TurnComplete{turn}
-		turnChannel <- turn
 	}
 
 	stopGame <- true
+	ticker.Stop()
 
-	boardStates.WriteImage(p, c)
+	//boardStates.WriteImage(p, c)
 
 	aliveCells := boardStates.current.AliveCells()
 	c.events <- FinalTurnComplete{turn,aliveCells}
@@ -232,6 +240,8 @@ func distributor(p Params, c distributorChannels) {
 	<-c.ioIdle
 
 	c.events <- StateChange{turn, Quitting}
+
+	close(stopGame)
 	
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)
