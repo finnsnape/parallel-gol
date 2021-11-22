@@ -29,6 +29,7 @@ type BoardStates struct {
 	advanced *Board // the current board after one turn
 	width int
 	height int
+	mutex sync.Mutex
 }
 
 // createBoard creates a board struct given a width and height
@@ -151,9 +152,19 @@ func (boardStates *BoardStates) CalculateAliveCellCount(stopGame chan struct{}, 
 		select {
 		case <-ticker.C:
 			// stop the rest of the code from accessing boardStates (e.g. with mutex)
+			boardStates.mutex.Lock()
 			// calculate the count
 			count := 0
+			currentBoard := boardStates.current
+			for i := 0; i < boardStates.height;i++ {
+				for j := 0; j < boardStates.width; j++ {
+					if currentBoard.Get(j,i)== 255 {
+						count++
+					}
+				}
+			}
 			// unlock boardStates
+			boardStates.mutex.Unlock()
 			countChannel <- count
 		case <-stopGame: // check if game is over
 			ticker.Stop()
