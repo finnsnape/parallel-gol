@@ -142,20 +142,20 @@ func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width i
 
 func (boardStates *BoardStates) ReportAliveCellCount(stopGame chan bool, turnChannel chan int, c distributorChannels) {
 	turn := 0
-	ticker := time.NewTicker(2 * time.Second)
-	for ; true; <-ticker.C {
-		count := 0
-		for j := 0; j < boardStates.height; j++ {
-			for i := 0; i < boardStates.width; i++ {
+	ticker := time.NewTicker(2 * time.Second) // every 2 seconds
+	for range ticker.C {
+		count := 0 // count number of cells
+		for i:=0; i<boardStates.height; i++ {
+			for j:=0; j<boardStates.width; j++ {
 				if boardStates.current.Alive(i, j, false) {
 					count++
 				}
 			}
 		}
 		select {
-			case t := <-turnChannel:
+			case t := <-turnChannel: // update the turn when one turn finishes
 				turn = t
-			case <-stopGame:
+			case <-stopGame: // check if game is over
 				ticker.Stop()
 				return
 		}
@@ -191,8 +191,8 @@ func distributor(p Params, c distributorChannels) {
 	go boardStates.ReportAliveCellCount(stopGame, turnChannel, c)
 
 	turn := 0
-	var wg sync.WaitGroup
 	workers := p.Threads
+	var wg sync.WaitGroup
 	for turn<p.Turns { // execute the turns
 		boardStates.Advance(&wg, workers, p.ImageWidth, p.ImageHeight)
 		wg.Wait()
