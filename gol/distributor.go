@@ -30,7 +30,7 @@ type Game struct {
 	advanced *Board // the current board after one turn
 	width int
 	height int
-	finishedTurn int
+	completedTurns int
 	mutex sync.Mutex
 	events chan<- Event
 }
@@ -50,7 +50,7 @@ func createGame(width int, height int, c distributorChannels) *Game {
 	current := createBoard(width, height)
 	current.PopulateBoard(c) // set the cells of the current board to those from the input
 	advanced := createBoard(width, height)
-	return &Game{current: current, advanced: advanced, width: width, height: height,finishedTurn: 0, events: c.events}
+	return &Game{current: current, advanced: advanced, width: width, height: height,completedTurns: 0, events: c.events}
 }
 
 // PopulateBoard sets the board values to those from the input
@@ -109,14 +109,14 @@ func (game *Game) AdvanceCell(x int, y int) {
 	if game.current.Alive(x,y, false) { // if the cell is alive
 		if aliveNeighbours < 2 || aliveNeighbours > 3 {
 			newCellValue = 0 // dies
-			game.events <- CellFlipped{CompletedTurns: game.finishedTurn, Cell: util.Cell{X: x, Y: y}}
+			game.events <- CellFlipped{CompletedTurns: game.completedTurns, Cell: util.Cell{X: x, Y: y}}
 		} else {
 			newCellValue = 255 // stays the same
 		}
 	} else { // if the cell is dead
 		if aliveNeighbours == 3 {
 			newCellValue = 255 // becomes alive
-			game.events <- CellFlipped{CompletedTurns: game.finishedTurn, Cell: util.Cell{X: x, Y: y}}
+			game.events <- CellFlipped{CompletedTurns: game.completedTurns, Cell: util.Cell{X: x, Y: y}}
 		} else {
 			newCellValue = 0 // stays the same
 		}
@@ -172,7 +172,7 @@ func (game *Game) MonitorAliveCellCount(stopGame chan struct{}) {
 					}
 				}
 			}
-			game.events <- AliveCellsCount{game.finishedTurn, count}
+			game.events <- AliveCellsCount{game.completedTurns, count}
 			game.mutex.Unlock()
 		case <-stopGame: // check if game is over
 			ticker.Stop()
@@ -240,17 +240,17 @@ func distributor(p Params, c distributorChannels) {
 
 	workers := p.Threads
 	var wg sync.WaitGroup
-	for game.finishedTurn < p.Turns { // execute the turns
+	for game.completedTurns < p.Turns { // execute the turns
 		game.Advance(&wg, workers, p.ImageWidth, p.ImageHeight)
 		wg.Wait()
 
 		game.mutex.Lock()
 		// swap the boards since the old advanced is current, and we will update all cells of the new advanced anyway
 		game.current, game.advanced = game.advanced, game.current
-		game.finishedTurn++
+		game.completedTurns++
 		game.mutex.Unlock()
 
-		game.events <- TurnComplete{game.finishedTurn}
+		game.events <- TurnComplete{game.completedTurns}
 	}
 
 	close(stopGame)
@@ -258,13 +258,13 @@ func distributor(p Params, c distributorChannels) {
 	game.WriteImage(p, c)
 
 	aliveCells := game.current.AliveCells()
-	game.events <- FinalTurnComplete{game.finishedTurn,aliveCells}
+	game.events <- FinalTurnComplete{game.completedTurns,aliveCells}
 
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 
-	game.events <- StateChange{game.finishedTurn, Quitting}
+	game.events <- StateChange{game.completedTurns, Quitting}
 	
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(game.events)
