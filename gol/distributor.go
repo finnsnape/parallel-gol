@@ -255,7 +255,7 @@ func distributor(p Params, c distributorChannels) {
 
 	close(stopGame)
 
-	//game.WriteImage(p, c)
+	game.WriteImage(p, c)
 
 	aliveCells := game.current.AliveCells()
 	game.events <- FinalTurnComplete{game.finishedTurn,aliveCells}
