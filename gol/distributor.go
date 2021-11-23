@@ -24,8 +24,8 @@ type Board struct {
 	height int
 }
 
-// BoardStates stores the current state of the board, the state of the board if we make one more turn, and the w/h
-type BoardStates struct {
+// Game stores the state of the boards, events and details about the ongoing game
+type Game struct {
 	current *Board // the current board
 	advanced *Board // the current board after one turn
 	width int
@@ -45,12 +45,12 @@ func createBoard(width int, height int) *Board {
 	return &Board{cells: cells, width: width, height: height}
 }
 
-// createBoardStates creates the board states given a width, height and the input
-func createBoardStates(width int, height int, c distributorChannels) *BoardStates {
+// createGame creates an instance of Game
+func createGame(width int, height int, c distributorChannels) *Game {
 	current := createBoard(width, height)
 	current.PopulateBoard(c) // set the cells of the current board to those from the input
 	advanced := createBoard(width, height)
-	return &BoardStates{current: current, advanced: advanced, width: width, height: height,finishedTurn: 0, events: c.events}
+	return &Game{current: current, advanced: advanced, width: width, height: height,finishedTurn: 0, events: c.events}
 }
 
 // PopulateBoard sets the board values to those from the input
@@ -60,7 +60,7 @@ func (board *Board) PopulateBoard(c distributorChannels) {
 			value := <- c.ioInput
 			board.Set(i, j, value)
 			if value == 255 { // when first loading the board, send the event for all cells that are alive
-				c.events <- CellFlipped{0, util.Cell{i,j}}
+				c.events <- CellFlipped{Cell: util.Cell{X: i, Y: j}}
 			}
 		}
 	}
@@ -102,44 +102,45 @@ func (board *Board) Neighbours(x int, y int) int {
 }
 
 // AdvanceCell updates the value for a specific cell after a turn
-func (boardStates *BoardStates) AdvanceCell(x int, y int) {
-	aliveNeighbours := boardStates.current.Neighbours(x, y)
+// TODO: could probably clean this function up a bit, maybe only check Alive when we need to?
+func (game *Game) AdvanceCell(x int, y int) {
+	aliveNeighbours := game.current.Neighbours(x, y)
 	var newCellValue uint8
-	if boardStates.current.Alive(x,y, false) { // if the cell is alive
+	if game.current.Alive(x,y, false) { // if the cell is alive
 		if aliveNeighbours < 2 || aliveNeighbours > 3 {
 			newCellValue = 0 // dies
-			boardStates.events <- CellFlipped{boardStates.finishedTurn,util.Cell{x,y}}
+			game.events <- CellFlipped{CompletedTurns: game.finishedTurn, Cell: util.Cell{X: x, Y: y}}
 		} else {
 			newCellValue = 255 // stays the same
 		}
 	} else { // if the cell is dead
 		if aliveNeighbours == 3 {
 			newCellValue = 255 // becomes alive
-			boardStates.events <- CellFlipped{boardStates.finishedTurn,util.Cell{x,y}}
+			game.events <- CellFlipped{CompletedTurns: game.finishedTurn, Cell: util.Cell{X: x, Y: y}}
 		} else {
 			newCellValue = 0 // stays the same
 		}
 	}
-	boardStates.advanced.Set(x, y, newCellValue)
+	game.advanced.Set(x, y, newCellValue)
 }
 
 // AdvanceSection advances the board one turn only between the specified x and y values assigned to the worker
-func (boardStates *BoardStates) AdvanceSection(startX int, endX int, startY int, endY int) {
+func (game *Game) AdvanceSection(startX int, endX int, startY int, endY int) {
 	for j:=startY; j<endY; j++ {
 		for i:=startX; i<endX; i++ {
-			boardStates.AdvanceCell(i, j)
+			game.AdvanceCell(i, j)
 		}
 	}
 }
 
-// worker updates boardStates.advanced based on boardStates.current, from startY up to endY
-func worker(wg *sync.WaitGroup, boardStates *BoardStates, startX int, endX int, startY int, endY int) {
+// SpawnAdvanceWorker updates game.advanced based on game.current, from startY up to endY
+func (game *Game) SpawnAdvanceWorker(wg *sync.WaitGroup, startX int, endX int, startY int, endY int) {
 	defer wg.Done()
-	boardStates.AdvanceSection(startX, endX, startY, endY)
+	game.AdvanceSection(startX, endX, startY, endY)
 }
 
 // Advance splits the board into horizontal slices. Each worker works on one section to advance the whole board one turn
-func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width int, height int) {
+func (game *Game) Advance(wg *sync.WaitGroup, workers int, width int, height int) {
 	for i:=0; i<workers; i++ {
 		startX := 0
 		endX := width
@@ -151,32 +152,28 @@ func (boardStates *BoardStates) Advance(wg *sync.WaitGroup, workers int, width i
 			endY = (i + 1) * height/workers
 		}
 		wg.Add(1)
-		go worker(wg, boardStates, startX, endX, startY, endY)
+		go game.SpawnAdvanceWorker(wg, startX, endX, startY, endY)
 	}
 }
 
-func (boardStates *BoardStates) CalculateAliveCellCount(c distributorChannels, stopGame chan struct{}, countChannel chan int) {
+// MonitorAliveCellCount gets the number of alive cells every 2sec and submits the event
+// TODO: make concurrent?
+func (game *Game) MonitorAliveCellCount(stopGame chan struct{}) {
 	ticker := time.NewTicker(2 * time.Second) // every 2 seconds
 	for {
 		select {
-		case <-ticker.C:
-			// stop the rest of the code from accessing boardStates (e.g. with mutex)
-			boardStates.mutex.Lock()
-			// calculate the count
+		case <-ticker.C: // 2 seconds has passed
+			game.mutex.Lock()
 			count := 0
-			currentBoard := boardStates.current
-			for i := 0; i < boardStates.height;i++ {
-				for j := 0; j < boardStates.width; j++ {
-					if currentBoard.Alive(j,i,false) {
+			for j:=0; j < game.height; j++ { // count number of alive cells
+				for i:=0; i<game.width; i++ {
+					if game.current.Alive(i,j,false) {
 						count++
 					}
 				}
 			}
-			//countChannel <- count
-			c.events <- AliveCellsCount{boardStates.finishedTurn, count}
-			// unlock boardStates
-			boardStates.mutex.Unlock()
-
+			game.events <- AliveCellsCount{game.finishedTurn, count}
+			game.mutex.Unlock()
 		case <-stopGame: // check if game is over
 			ticker.Stop()
 			return
@@ -198,35 +195,34 @@ func (board *Board) AliveCells() []util.Cell {
 }
 
 // WriteImage outputs the final state of the board as a PGM image
-func (boardStates *BoardStates) WriteImage(p Params,c distributorChannels) {
+// TODO: make concurrent?
+func (game *Game) WriteImage(p Params, c distributorChannels) {
 	c.ioCommand <- ioOutput
 	filename := strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight) + "x" + strconv.Itoa(p.Turns)
 	c.ioFilename <- filename
+	game.mutex.Lock()
 	for j := 0; j < p.ImageHeight; j++ {
 		for i := 0; i < p.ImageWidth; i++{
-			c.ioOutput <- boardStates.current.Get(i, j)
+			c.ioOutput <- game.current.Get(i, j)
 		}
 	}
-	c.events <- ImageOutputComplete{p.Turns,filename}
+	game.events <- ImageOutputComplete{p.Turns,filename}
+	game.mutex.Unlock()
 }
 
 // KeyPressed follows the rules when certain keys are pressed
-func (boardStates *BoardStates)KeyPressed(p Params,c distributorChannels,keys <-chan rune, gameTerminate chan bool){
-	for{
+func (game *Game) KeyPressed(p Params, c distributorChannels, keys <-chan rune){
+	for {
 		key := <- keys
 		switch key {
 		case 's' :
-			boardStates.mutex.Lock()
-			boardStates.WriteImage(p,c)
-			boardStates.mutex.Unlock()
+			game.WriteImage(p,c)
+
 		case 'q' :
-			boardStates.mutex.Lock()
-			boardStates.WriteImage(p,c)
-			gameTerminate <- true
-			boardStates.mutex.Unlock()
+			game.WriteImage(p,c)
+			return
 		}
 	}
-
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
@@ -237,54 +233,39 @@ func distributor(p Params, c distributorChannels) {
 	c.ioCommand <- ioInput // start read the image
 	c.ioFilename <- filename // pass the filename of the image
 
-	boardStates := createBoardStates(p.ImageWidth, p.ImageHeight, c)
+	game := createGame(p.ImageWidth, p.ImageHeight, c)
 
 	stopGame := make(chan struct{})
-	countChannel := make(chan int)
-	//gameTerminate := make(chan bool)
-	/* go func() {
-		for {
-			select {
-			case count := <- countChannel:
-				c.events <- AliveCellsCount{boardStates.finishedTurn, count}
-			case <-stopGame:
-				return
-			}
-		}
-	}() */
-	go boardStates.CalculateAliveCellCount(c, stopGame, countChannel)
+	go game.MonitorAliveCellCount(stopGame)
 
 	workers := p.Threads
 	var wg sync.WaitGroup
-	for boardStates.finishedTurn < p.Turns { // execute the turns
-		boardStates.Advance(&wg, workers, p.ImageWidth, p.ImageHeight)
+	for game.finishedTurn < p.Turns { // execute the turns
+		game.Advance(&wg, workers, p.ImageWidth, p.ImageHeight)
 		wg.Wait()
 
-
+		game.mutex.Lock()
 		// swap the boards since the old advanced is current, and we will update all cells of the new advanced anyway
+		game.current, game.advanced = game.advanced, game.current
+		game.finishedTurn++
+		game.mutex.Unlock()
 
-		boardStates.mutex.Lock()
-		boardStates.current, boardStates.advanced = boardStates.advanced, boardStates.current
-		boardStates.finishedTurn++
-		boardStates.mutex.Unlock()
-
-		c.events <- TurnComplete{boardStates.finishedTurn}
-		// turnChannel <- turn // commenting this out makes Stage 2 run fast
+		game.events <- TurnComplete{game.finishedTurn}
 	}
 
 	close(stopGame)
 
-	boardStates.WriteImage(p, c)
+	//game.WriteImage(p, c)
 
-	aliveCells := boardStates.current.AliveCells()
-	c.events <- FinalTurnComplete{boardStates.finishedTurn,aliveCells}
+	aliveCells := game.current.AliveCells()
+	game.events <- FinalTurnComplete{game.finishedTurn,aliveCells}
 
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 
-	c.events <- StateChange{boardStates.finishedTurn, Quitting}
+	game.events <- StateChange{game.finishedTurn, Quitting}
 	
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
-	close(c.events)
+	close(game.events)
 }
