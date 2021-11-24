@@ -211,7 +211,7 @@ func (game *Game) WriteImage(p Params, c distributorChannels) {
 }
 
 // MonitorKeyPresses follows the rules when certain keys are pressed
-func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, keyGameOver chan bool){
+func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, gameOver chan bool, pause chan bool){
 	for {
 		key := <- c.keys
 		switch key {
@@ -219,10 +219,34 @@ func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, keyGameOver
 			game.WriteImage(p,c)
 		case 'q' :
 			//game.WriteImage(p,c)
-			keyGameOver <- true
+			gameOver <- true
 			return
+		case 'p':
+			pause <- true
 		}
 	}
+}
+
+func (game *Game) ExecuteTurns(gameOver chan bool, p Params) {
+	var wg sync.WaitGroup
+	for game.completedTurns < p.Turns { // execute the turns
+		select {
+		case <-gameOver:
+			return
+		default:
+		}
+		game.Advance(&wg, p.Threads, p.ImageWidth, p.ImageHeight)
+		wg.Wait()
+
+		game.mutex.Lock()
+		// swap the boards since the old advanced is current, and we will update all cells of the new advanced anyway
+		game.current, game.advanced = game.advanced, game.current
+		game.completedTurns++
+		game.mutex.Unlock()
+
+		game.events <- TurnComplete{game.completedTurns}
+	}
+	gameOver <- true
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
@@ -236,31 +260,13 @@ func distributor(p Params, c distributorChannels) {
 	game := createGame(p.ImageWidth, p.ImageHeight, c)
 
 	stopGame := make(chan struct{})
-	keyGameOver := make(chan bool)
+	keyPause := make(chan bool)
+	gameOver := make(chan bool)
 	go game.MonitorAliveCellCount(stopGame)
-	go game.MonitorKeyPresses(p, c, keyGameOver)
+	go game.MonitorKeyPresses(p, c, gameOver, keyPause)
+	go game.ExecuteTurns(gameOver, p)
 
-	workers := p.Threads
-	var wg sync.WaitGroup
-	out:
-	for game.completedTurns < p.Turns { // execute the turns
-		select {
-		case <-keyGameOver:
-			break out
-		default:
-		}
-		game.Advance(&wg, workers, p.ImageWidth, p.ImageHeight)
-		wg.Wait()
-
-		game.mutex.Lock()
-		// swap the boards since the old advanced is current, and we will update all cells of the new advanced anyway
-		game.current, game.advanced = game.advanced, game.current
-		game.completedTurns++
-		game.mutex.Unlock()
-
-		game.events <- TurnComplete{game.completedTurns}
-	}
-
+	<-gameOver
 	close(stopGame)
 
 	game.WriteImage(p, c)
