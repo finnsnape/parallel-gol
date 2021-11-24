@@ -198,7 +198,7 @@ func (board *Board) AliveCells() []util.Cell {
 // TODO: make concurrent?
 func (game *Game) WriteImage(p Params, c distributorChannels) {
 	c.ioCommand <- ioOutput
-	filename := strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight) + "x" + strconv.Itoa(p.Turns)
+	filename := strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight) + "x" + strconv.Itoa(game.completedTurns)
 	c.ioFilename <- filename
 	game.mutex.Lock()
 	for j := 0; j < p.ImageHeight; j++ {
@@ -206,20 +206,20 @@ func (game *Game) WriteImage(p Params, c distributorChannels) {
 			c.ioOutput <- game.current.Get(i, j)
 		}
 	}
-	game.events <- ImageOutputComplete{p.Turns,filename}
+	game.events <- ImageOutputComplete{game.completedTurns,filename}
 	game.mutex.Unlock()
 }
 
-// KeyPressed follows the rules when certain keys are pressed
-func (game *Game) KeyPressed(p Params, c distributorChannels, keys <-chan rune){
+// MonitorKeyPresses follows the rules when certain keys are pressed
+func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, keyGameOver chan bool){
 	for {
-		key := <- keys
+		key := <- c.keys
 		switch key {
 		case 's' :
 			game.WriteImage(p,c)
-
 		case 'q' :
-			game.WriteImage(p,c)
+			//game.WriteImage(p,c)
+			keyGameOver <- true
 			return
 		}
 	}
@@ -236,11 +236,19 @@ func distributor(p Params, c distributorChannels) {
 	game := createGame(p.ImageWidth, p.ImageHeight, c)
 
 	stopGame := make(chan struct{})
+	keyGameOver := make(chan bool)
 	go game.MonitorAliveCellCount(stopGame)
+	go game.MonitorKeyPresses(p, c, keyGameOver)
 
 	workers := p.Threads
 	var wg sync.WaitGroup
+	out:
 	for game.completedTurns < p.Turns { // execute the turns
+		select {
+		case <-keyGameOver:
+			break out
+		default:
+		}
 		game.Advance(&wg, workers, p.ImageWidth, p.ImageHeight)
 		wg.Wait()
 
