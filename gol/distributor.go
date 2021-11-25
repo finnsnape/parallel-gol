@@ -1,6 +1,7 @@
 package gol
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -17,21 +18,31 @@ type distributorChannels struct {
 	keys	   <-chan rune
 }
 
+/*
+TODO:
+- our MonitorAliveCellCount and WriteImage methods should be able to run at the same time. they only need to make sure the board is not being swapped
+- make more things concurrent?
+- general cleaning/refactoring
+- reuse more code
+- consider a struct implementation of Cell
+ */
+
 // Board stores one game of life board and its width/height
 type Board struct {
 	cells [][]uint8
-	width int
-	height int
+	width int // do we need all of these?
+	height int // do we need all of these?
 }
 
 // Game stores the state of the boards, events and details about the ongoing game
 type Game struct {
 	current *Board // the current board
 	advanced *Board // the current board after one turn
-	width int
-	height int
+	width int // do we need all of these?
+	height int // do we need all of these?
 	completedTurns int
-	mutex sync.Mutex
+	raceMutex sync.Mutex
+	paused bool
 	events chan<- Event
 }
 
@@ -50,7 +61,7 @@ func createGame(width int, height int, c distributorChannels) *Game {
 	current := createBoard(width, height)
 	current.PopulateBoard(c) // set the cells of the current board to those from the input
 	advanced := createBoard(width, height)
-	return &Game{current: current, advanced: advanced, width: width, height: height,completedTurns: 0, events: c.events}
+	return &Game{current: current, advanced: advanced, width: width, height: height, completedTurns: 0, events: c.events, paused: false}
 }
 
 // PopulateBoard sets the board values to those from the input
@@ -66,13 +77,13 @@ func (board *Board) PopulateBoard(c distributorChannels) {
 	}
 }
 
-// Get sets the value of a cell
-func (board *Board) Get (x int, y int) uint8 {
+// Get retrieves the value of a cell
+func (board *Board) Get(x int, y int) uint8 {
 	return board.cells[y][x]
 }
 
 // Set sets the value of a cell
-func (board *Board) Set (x int, y int, val uint8) {
+func (board *Board) Set(x int, y int, val uint8) {
 	board.cells[y][x] = val
 }
 
@@ -82,7 +93,7 @@ func (board *Board) Alive(x int, y int, wrap bool) bool {
 		x = (x + board.width) % board.width // need to add the w and h for these as Go modulus doesn't like negatives
 		y = (y + board.height) % board.height
 	}
-	return board.cells[y][x] == 255
+	return board.Get(x, y) == 255
 }
 
 // Neighbours checks all cells within 1 cell, then checks if each of these are alive to get the returned neighbour count
@@ -158,12 +169,15 @@ func (game *Game) Advance(wg *sync.WaitGroup, workers int, width int, height int
 
 // MonitorAliveCellCount gets the number of alive cells every 2sec and submits the event
 // TODO: make concurrent?
-func (game *Game) MonitorAliveCellCount(stopGame chan struct{}) {
+func (game *Game) MonitorAliveCellCount(gameOver chan bool, pauseTicker chan bool) {
 	ticker := time.NewTicker(2 * time.Second) // every 2 seconds
 	for {
 		select {
+		case <-pauseTicker: // if it's paused
+			<-pauseTicker // wait until it's unpaused
+			// should we pause the ticker itself?
 		case <-ticker.C: // 2 seconds has passed
-			game.mutex.Lock()
+			game.raceMutex.Lock() // acquire lock in case count occurring during board swaps
 			count := 0
 			for j:=0; j < game.height; j++ { // count number of alive cells
 				for i:=0; i<game.width; i++ {
@@ -173,8 +187,8 @@ func (game *Game) MonitorAliveCellCount(stopGame chan struct{}) {
 				}
 			}
 			game.events <- AliveCellsCount{game.completedTurns, count}
-			game.mutex.Unlock()
-		case <-stopGame: // check if game is over
+			game.raceMutex.Unlock()
+		case <-gameOver: // check if game is over
 			ticker.Stop()
 			return
 		}
@@ -200,53 +214,61 @@ func (game *Game) WriteImage(p Params, c distributorChannels) {
 	c.ioCommand <- ioOutput
 	filename := strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight) + "x" + strconv.Itoa(game.completedTurns)
 	c.ioFilename <- filename
-	game.mutex.Lock()
-	for j := 0; j < p.ImageHeight; j++ {
-		for i := 0; i < p.ImageWidth; i++{
+	game.raceMutex.Lock() // make sure current isn't being swapped whilst we output
+	for j:=0; j<p.ImageHeight; j++ {
+		for i:=0; i<p.ImageWidth; i++ {
 			c.ioOutput <- game.current.Get(i, j)
 		}
 	}
 	game.events <- ImageOutputComplete{game.completedTurns,filename}
-	game.mutex.Unlock()
+	game.raceMutex.Unlock()
 }
 
 // MonitorKeyPresses follows the rules when certain keys are pressed
-func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, gameOver chan bool, pause chan bool){
+func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, gameOver chan bool, pauseTurns chan bool, pauseTicker chan bool) {
 	for {
 		key := <- c.keys
 		switch key {
-		case 's' :
-			game.WriteImage(p,c)
-		case 'q' :
-			//game.WriteImage(p,c)
-			gameOver <- true
-			return
-		case 'p':
-			pause <- true
+			case 's' :
+				game.WriteImage(p,c)
+			case 'q' :
+				gameOver <- true
+				return
+			case 'p':
+				if game.paused {
+					fmt.Println("Continuing")
+					game.paused = false
+				} else {
+					fmt.Println(game.completedTurns)
+					game.paused = true
+				}
+				pauseTurns <- game.paused
+				pauseTicker <- game.paused
 		}
 	}
 }
 
-func (game *Game) ExecuteTurns(gameOver chan bool, p Params) {
+func (game *Game) ExecuteTurns(gameOver chan bool, p Params, pauseTurns chan bool) {
 	var wg sync.WaitGroup
 	for game.completedTurns < p.Turns { // execute the turns
 		select {
-		case <-gameOver:
-			return
-		default:
+			case <-pauseTurns: // if it's paused
+				<-pauseTurns // wait until it's unpaused
+			case <-gameOver:
+				return
+			default:
 		}
 		game.Advance(&wg, p.Threads, p.ImageWidth, p.ImageHeight)
-		wg.Wait()
+		wg.Wait() // wait until all goroutines are done for this turn
 
-		game.mutex.Lock()
-		// swap the boards since the old advanced is current, and we will update all cells of the new advanced anyway
+		game.raceMutex.Lock() // lock in case count occurring during board swaps
+		// we swap the boards since the old advanced is current, and we will update all cells of the new advanced anyway
 		game.current, game.advanced = game.advanced, game.current
 		game.completedTurns++
-		game.mutex.Unlock()
-
+		game.raceMutex.Unlock()
 		game.events <- TurnComplete{game.completedTurns}
 	}
-	gameOver <- true
+	gameOver <- true // all turns executed
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
@@ -254,23 +276,22 @@ func distributor(p Params, c distributorChannels) {
 	// make the filename and pass it through channel
 	var filename string
 	filename = strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight)
-	c.ioCommand <- ioInput // start read the image
+	c.ioCommand <- ioInput // start reading the image
 	c.ioFilename <- filename // pass the filename of the image
 
 	game := createGame(p.ImageWidth, p.ImageHeight, c)
 
-	stopGame := make(chan struct{})
-	keyPause := make(chan bool)
-	gameOver := make(chan bool)
-	go game.MonitorAliveCellCount(stopGame)
-	go game.MonitorKeyPresses(p, c, gameOver, keyPause)
-	go game.ExecuteTurns(gameOver, p)
+	gameOver := make(chan bool, 1) // buffer 1 in case stuck on "<-pauseTurns", and hence "gameOver <- true" deadlocks as channel is full
+	pauseTurns := make(chan bool)
+	pauseTicker := make(chan bool)
+	go game.MonitorAliveCellCount(gameOver, pauseTicker)
+	go game.MonitorKeyPresses(p, c, gameOver, pauseTurns, pauseTicker)
+	go game.ExecuteTurns(gameOver, p, pauseTurns)
 
-	<-gameOver
-	close(stopGame)
+	<-gameOver // wait until turns are done executing
+	gameOver <- true // make sure all goroutines know it is finished. could use another channel to be less confusing
 
 	game.WriteImage(p, c)
-
 	aliveCells := game.current.AliveCells()
 	game.events <- FinalTurnComplete{game.completedTurns,aliveCells}
 
