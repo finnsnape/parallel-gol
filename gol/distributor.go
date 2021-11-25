@@ -25,6 +25,8 @@ TODO:
 - general cleaning/refactoring
 - reuse more code
 - consider a struct implementation of Cell
+- https://github.com/uber-go/guide/blob/master/style.md
+- error handling?
 */
 
 // Board stores one game of life board and its width/height
@@ -53,7 +55,11 @@ func createBoard(width int, height int) *Board {
 	for x := range cells {
 		cells[x] = make([]uint8, width)
 	}
-	return &Board{cells: cells, width: width, height: height}
+	return &Board{
+		cells:  cells,
+		width:  width,
+		height: height,
+	}
 }
 
 // createGame creates an instance of Game
@@ -61,7 +67,15 @@ func createGame(width int, height int, c distributorChannels) *Game {
 	current := createBoard(width, height)
 	current.PopulateBoard(c) // set the cells of the current board to those from the input
 	advanced := createBoard(width, height)
-	return &Game{current: current, advanced: advanced, width: width, height: height, completedTurns: 0, events: c.events, paused: false}
+	return &Game{
+		current:        current,
+		advanced:       advanced,
+		width:          width,
+		height:         height,
+		completedTurns: 0,
+		events:         c.events,
+		paused:         false,
+	}
 }
 
 // PopulateBoard sets the board values to those from the input
@@ -153,10 +167,12 @@ func (game *Game) SpawnAdvanceWorker(wg *sync.WaitGroup, startX int, endX int, s
 // Advance splits the board into horizontal slices. Each worker works on one section to advance the whole board one turn
 func (game *Game) Advance(wg *sync.WaitGroup, workers int, width int, height int) {
 	for i := 0; i < workers; i++ {
-		startX := 0
-		endX := width
-		startY := i * height / workers
-		var endY int
+		var (
+			startX = 0
+			endX   = width
+			startY = i * height / workers
+			endY   int
+		)
 		if i == workers-1 { // make the last worker take the remaining space
 			endY = height
 		} else {
