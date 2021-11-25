@@ -15,7 +15,7 @@ type distributorChannels struct {
 	ioFilename chan<- string
 	ioOutput   chan<- uint8
 	ioInput    <-chan uint8
-	keys	   <-chan rune
+	keys       <-chan rune
 }
 
 /*
@@ -25,25 +25,25 @@ TODO:
 - general cleaning/refactoring
 - reuse more code
 - consider a struct implementation of Cell
- */
+*/
 
 // Board stores one game of life board and its width/height
 type Board struct {
-	cells [][]uint8
-	width int // do we need all of these?
+	cells  [][]uint8
+	width  int // do we need all of these?
 	height int // do we need all of these?
 }
 
 // Game stores the state of the boards, events and details about the ongoing game
 type Game struct {
-	current *Board // the current board
-	advanced *Board // the current board after one turn
-	width int // do we need all of these?
-	height int // do we need all of these?
+	current        *Board // the current board
+	advanced       *Board // the current board after one turn
+	width          int    // do we need all of these?
+	height         int    // do we need all of these?
 	completedTurns int
-	raceMutex sync.Mutex
-	paused bool
-	events chan<- Event
+	raceMutex      sync.Mutex
+	paused         bool
+	events         chan<- Event
 }
 
 // createBoard creates a board struct given a width and height
@@ -66,9 +66,9 @@ func createGame(width int, height int, c distributorChannels) *Game {
 
 // PopulateBoard sets the board values to those from the input
 func (board *Board) PopulateBoard(c distributorChannels) {
-	for j:=0; j<board.height; j++ {
-		for i:=0; i<board.width; i++ {
-			value := <- c.ioInput
+	for j := 0; j < board.height; j++ {
+		for i := 0; i < board.width; i++ {
+			value := <-c.ioInput
 			board.Set(i, j, value)
 			if value == 255 { // when first loading the board, send the event for all cells that are alive
 				c.events <- CellFlipped{Cell: util.Cell{X: i, Y: j}}
@@ -99,8 +99,8 @@ func (board *Board) Alive(x int, y int, wrap bool) bool {
 // Neighbours checks all cells within 1 cell, then checks if each of these are alive to get the returned neighbour count
 func (board *Board) Neighbours(x int, y int) int {
 	aliveNeighbours := 0
-	for i:=-1; i<=1; i++ {
-		for j:=-1; j<=1; j++ {
+	for i := -1; i <= 1; i++ {
+		for j := -1; j <= 1; j++ {
 			if i == 0 && j == 0 { // ensure we aren't counting the cell itself
 				continue
 			}
@@ -117,7 +117,7 @@ func (board *Board) Neighbours(x int, y int) int {
 func (game *Game) AdvanceCell(x int, y int) {
 	aliveNeighbours := game.current.Neighbours(x, y)
 	var newCellValue uint8
-	if game.current.Alive(x,y, false) { // if the cell is alive
+	if game.current.Alive(x, y, false) { // if the cell is alive
 		if aliveNeighbours < 2 || aliveNeighbours > 3 {
 			newCellValue = 0 // dies
 			game.events <- CellFlipped{CompletedTurns: game.completedTurns, Cell: util.Cell{X: x, Y: y}}
@@ -137,8 +137,8 @@ func (game *Game) AdvanceCell(x int, y int) {
 
 // AdvanceSection advances the board one turn only between the specified x and y values assigned to the worker
 func (game *Game) AdvanceSection(startX int, endX int, startY int, endY int) {
-	for j:=startY; j<endY; j++ {
-		for i:=startX; i<endX; i++ {
+	for j := startY; j < endY; j++ {
+		for i := startX; i < endX; i++ {
 			game.AdvanceCell(i, j)
 		}
 	}
@@ -152,15 +152,15 @@ func (game *Game) SpawnAdvanceWorker(wg *sync.WaitGroup, startX int, endX int, s
 
 // Advance splits the board into horizontal slices. Each worker works on one section to advance the whole board one turn
 func (game *Game) Advance(wg *sync.WaitGroup, workers int, width int, height int) {
-	for i:=0; i<workers; i++ {
+	for i := 0; i < workers; i++ {
 		startX := 0
 		endX := width
-		startY := i * height/workers
+		startY := i * height / workers
 		var endY int
 		if i == workers-1 { // make the last worker take the remaining space
 			endY = height
 		} else {
-			endY = (i + 1) * height/workers
+			endY = (i + 1) * height / workers
 		}
 		wg.Add(1)
 		go game.SpawnAdvanceWorker(wg, startX, endX, startY, endY)
@@ -179,9 +179,9 @@ func (game *Game) MonitorAliveCellCount(gameOver chan bool, pauseTicker chan boo
 		case <-ticker.C: // 2 seconds has passed
 			game.raceMutex.Lock() // acquire lock in case count occurring during board swaps
 			count := 0
-			for j:=0; j < game.height; j++ { // count number of alive cells
-				for i:=0; i<game.width; i++ {
-					if game.current.Alive(i,j,false) {
+			for j := 0; j < game.height; j++ { // count number of alive cells
+				for i := 0; i < game.width; i++ {
+					if game.current.Alive(i, j, false) {
 						count++
 					}
 				}
@@ -198,8 +198,8 @@ func (game *Game) MonitorAliveCellCount(gameOver chan bool, pauseTicker chan boo
 // AliveCells returns a list of Cells that are alive at the end of the game
 func (board *Board) AliveCells() []util.Cell {
 	var aliveCells []util.Cell
-	for j:=0; j<board.height; j++ {
-		for i:=0; i<board.width; i++ {
+	for j := 0; j < board.height; j++ {
+		for i := 0; i < board.width; i++ {
 			if board.Alive(i, j, false) {
 				aliveCells = append(aliveCells, util.Cell{X: i, Y: j})
 			}
@@ -215,35 +215,35 @@ func (game *Game) WriteImage(p Params, c distributorChannels) {
 	filename := strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight) + "x" + strconv.Itoa(game.completedTurns)
 	c.ioFilename <- filename
 	game.raceMutex.Lock() // make sure current isn't being swapped whilst we output
-	for j:=0; j<p.ImageHeight; j++ {
-		for i:=0; i<p.ImageWidth; i++ {
+	for j := 0; j < p.ImageHeight; j++ {
+		for i := 0; i < p.ImageWidth; i++ {
 			c.ioOutput <- game.current.Get(i, j)
 		}
 	}
-	game.events <- ImageOutputComplete{game.completedTurns,filename}
+	game.events <- ImageOutputComplete{game.completedTurns, filename}
 	game.raceMutex.Unlock()
 }
 
 // MonitorKeyPresses follows the rules when certain keys are pressed
 func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, gameOver chan bool, pauseTurns chan bool, pauseTicker chan bool) {
 	for {
-		key := <- c.keys
+		key := <-c.keys
 		switch key {
-			case 's' :
-				game.WriteImage(p,c)
-			case 'q' :
-				gameOver <- true
-				return
-			case 'p':
-				if game.paused {
-					fmt.Println("Continuing")
-					game.paused = false
-				} else {
-					fmt.Println(game.completedTurns)
-					game.paused = true
-				}
-				pauseTurns <- game.paused
-				pauseTicker <- game.paused
+		case 's':
+			game.WriteImage(p, c)
+		case 'q':
+			gameOver <- true
+			return
+		case 'p':
+			if game.paused {
+				fmt.Println("Continuing")
+				game.paused = false
+			} else {
+				fmt.Println(game.completedTurns)
+				game.paused = true
+			}
+			pauseTurns <- game.paused
+			pauseTicker <- game.paused
 		}
 	}
 }
@@ -252,11 +252,11 @@ func (game *Game) ExecuteTurns(gameOver chan bool, p Params, pauseTurns chan boo
 	var wg sync.WaitGroup
 	for game.completedTurns < p.Turns { // execute the turns
 		select {
-			case <-pauseTurns: // if it's paused
-				<-pauseTurns // wait until it's unpaused
-			case <-gameOver:
-				return
-			default:
+		case <-pauseTurns: // if it's paused
+			<-pauseTurns // wait until it's unpaused
+		case <-gameOver:
+			return
+		default:
 		}
 		game.Advance(&wg, p.Threads, p.ImageWidth, p.ImageHeight)
 		wg.Wait() // wait until all goroutines are done for this turn
@@ -276,7 +276,7 @@ func distributor(p Params, c distributorChannels) {
 	// make the filename and pass it through channel
 	var filename string
 	filename = strconv.Itoa(p.ImageWidth) + "x" + strconv.Itoa(p.ImageHeight)
-	c.ioCommand <- ioInput // start reading the image
+	c.ioCommand <- ioInput   // start reading the image
 	c.ioFilename <- filename // pass the filename of the image
 
 	game := createGame(p.ImageWidth, p.ImageHeight, c)
@@ -288,19 +288,19 @@ func distributor(p Params, c distributorChannels) {
 	go game.MonitorKeyPresses(p, c, gameOver, pauseTurns, pauseTicker)
 	go game.ExecuteTurns(gameOver, p, pauseTurns)
 
-	<-gameOver // wait until turns are done executing
+	<-gameOver       // wait until turns are done executing
 	gameOver <- true // make sure all goroutines know it is finished. could use another channel to be less confusing
 
 	game.WriteImage(p, c)
 	aliveCells := game.current.AliveCells()
-	game.events <- FinalTurnComplete{game.completedTurns,aliveCells}
+	game.events <- FinalTurnComplete{game.completedTurns, aliveCells}
 
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
 	<-c.ioIdle
 
 	game.events <- StateChange{game.completedTurns, Quitting}
-	
+
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(game.events)
 }
