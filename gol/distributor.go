@@ -20,6 +20,7 @@ type distributorChannels struct {
 
 /*
 TODO:
+- in report mention alternative (bad.../fake) ways of doing things, and how we then improved. e.g. non-OOP, slower parallel etc
 - our MonitorAliveCellCount and WriteImage methods should be able to run at the same time. they only need to make sure the board is not being swapped
 - make more things concurrent?
 - general cleaning/refactoring
@@ -256,7 +257,7 @@ func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, gameOver ch
 				fmt.Println("Continuing")
 				game.paused = false
 			} else {
-				fmt.Println(game.completedTurns)
+				fmt.Println("Paused after turn: ", game.completedTurns)
 				game.paused = true
 			}
 			pauseTurns <- game.paused
@@ -309,7 +310,7 @@ func distributor(p Params, c distributorChannels) {
 	select {
 	case <-gameOver:
 	default: // channel has not been closed so we close it
-		close(gameOver)
+		close(gameOver) // broadcasts to everything
 	}
 	//close(gameOver) // make sure all goroutines know it is finished. could use another channel to be less confusing
 
