@@ -27,6 +27,7 @@ TODO:
 - consider a struct implementation of Cell
 - https://github.com/uber-go/guide/blob/master/style.md
 - error handling?
+- use condition variable instead of mutex, giving 1 to writeimage and monitorcellcount each, and 2 to swap
 */
 
 // Board stores one game of life board and its width/height
@@ -185,7 +186,7 @@ func (game *Game) Advance(wg *sync.WaitGroup, workers int, width int, height int
 
 // MonitorAliveCellCount gets the number of alive cells every 2sec and submits the event
 // TODO: make concurrent?
-func (game *Game) MonitorAliveCellCount(gameOver chan bool, pauseTicker chan bool) {
+func (game *Game) MonitorAliveCellCount(gameOver chan struct{}, pauseTicker chan bool) {
 	ticker := time.NewTicker(2 * time.Second) // every 2 seconds
 	for {
 		select {
@@ -241,14 +242,14 @@ func (game *Game) WriteImage(p Params, c distributorChannels) {
 }
 
 // MonitorKeyPresses follows the rules when certain keys are pressed
-func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, gameOver chan bool, pauseTurns chan bool, pauseTicker chan bool) {
+func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, gameOver chan struct{}, pauseTurns chan bool, pauseTicker chan bool) {
 	for {
 		key := <-c.keys
 		switch key {
 		case 's':
 			game.WriteImage(p, c)
 		case 'q':
-			gameOver <- true
+			close(gameOver)
 			return
 		case 'p':
 			if game.paused {
@@ -264,7 +265,7 @@ func (game *Game) MonitorKeyPresses(p Params, c distributorChannels, gameOver ch
 	}
 }
 
-func (game *Game) ExecuteTurns(gameOver chan bool, p Params, pauseTurns chan bool) {
+func (game *Game) ExecuteTurns(gameOver chan struct{}, p Params, pauseTurns chan bool) {
 	var wg sync.WaitGroup
 	for game.completedTurns < p.Turns { // execute the turns
 		select {
@@ -284,7 +285,7 @@ func (game *Game) ExecuteTurns(gameOver chan bool, p Params, pauseTurns chan boo
 		game.raceMutex.Unlock()
 		game.events <- TurnComplete{game.completedTurns}
 	}
-	gameOver <- true // all turns executed
+	close(gameOver) // all turns executed
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
@@ -297,15 +298,20 @@ func distributor(p Params, c distributorChannels) {
 
 	game := createGame(p.ImageWidth, p.ImageHeight, c)
 
-	gameOver := make(chan bool, 1) // buffer 1 in case stuck on "<-pauseTurns", and hence "gameOver <- true" deadlocks as channel is full
+	gameOver := make(chan struct{}) // buffer 1 in case stuck on "<-pauseTurns", and hence "gameOver <- true" deadlocks as channel is full
 	pauseTurns := make(chan bool)
 	pauseTicker := make(chan bool)
 	go game.MonitorAliveCellCount(gameOver, pauseTicker)
 	go game.MonitorKeyPresses(p, c, gameOver, pauseTurns, pauseTicker)
 	go game.ExecuteTurns(gameOver, p, pauseTurns)
 
-	<-gameOver       // wait until turns are done executing
-	gameOver <- true // make sure all goroutines know it is finished. could use another channel to be less confusing
+	<-gameOver // wait until turns are done executing
+	select {
+	case <-gameOver:
+	default: // channel has not been closed so we close it
+		close(gameOver)
+	}
+	//close(gameOver) // make sure all goroutines know it is finished. could use another channel to be less confusing
 
 	game.WriteImage(p, c)
 	aliveCells := game.current.AliveCells()
