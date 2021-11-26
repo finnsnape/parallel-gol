@@ -40,8 +40,6 @@ type Board struct {
 type Game struct {
 	current        *Board // the current board
 	advanced       *Board // the current board after one turn
-	width          int    // do we need all of these?
-	height         int    // do we need all of these?
 	completedTurns int
 	raceMutex      sync.Mutex
 	paused         bool
@@ -70,8 +68,6 @@ func createGame(width int, height int, c distributorChannels) *Game {
 	return &Game{
 		current:        current,
 		advanced:       advanced,
-		width:          width,
-		height:         height,
 		completedTurns: 0,
 		events:         c.events,
 		paused:         false,
@@ -195,8 +191,8 @@ func (game *Game) MonitorAliveCellCount(gameOver chan bool, pauseTicker chan boo
 		case <-ticker.C: // 2 seconds has passed
 			game.raceMutex.Lock() // acquire lock in case count occurring during board swaps
 			count := 0
-			for j := 0; j < game.height; j++ { // count number of alive cells
-				for i := 0; i < game.width; i++ {
+			for j := 0; j < game.current.height; j++ { // count number of alive cells
+				for i := 0; i < game.current.width; i++ {
 					if game.current.Alive(i, j, false) {
 						count++
 					}
