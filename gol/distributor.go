@@ -20,7 +20,6 @@ type distributorChannels struct {
 
 /*
 TODO:
-- in report mention alternative (bad.../fake) ways of doing things, and how we then improved. e.g. non-OOP, slower parallel etc
 - our MonitorAliveCellCount and WriteImage methods should be able to run at the same time. they only need to make sure the board is not being swapped
 - make more things concurrent?
 - general cleaning/refactoring

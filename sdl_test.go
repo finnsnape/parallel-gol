@@ -17,7 +17,7 @@ var sdlAlive chan int
 
 func TestMain(m *testing.M) {
 	runtime.LockOSThread()
-	noVis := flag.Bool("noVis", false,
+	noVis := flag.Bool("noVis", true,
 		"Disables the SDL window, so there is no visualisation during the tests.")
 	flag.Parse()
 	p := gol.Params{ImageWidth: 512, ImageHeight: 512}

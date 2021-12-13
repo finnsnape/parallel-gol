@@ -22,10 +22,15 @@ func BenchmarkGol(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				events := make(chan gol.Event)
-				b.StartTimer()
+				//b.StartTimer()
 				go gol.Run(p, events, nil)
-				b.StopTimer()
-				for range events {
+				//b.StopTimer()
+			out:
+				for event := range events {
+					switch event.(type) {
+					case gol.FinalTurnComplete:
+						goto out
+					}
 				}
 			}
 		})
